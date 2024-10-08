@@ -6,8 +6,8 @@ export default function App() {
   const [result, setResult] = useState<number | undefined>();
 
   startTor()
-    .then(result => console.log(result))
-    .catch(error => console.error(error));
+    .then((res: any) => console.log(res))
+    .catch((err: any) => console.error(err));
 
   useEffect(() => {
     multiply(3, 7).then(setResult);
