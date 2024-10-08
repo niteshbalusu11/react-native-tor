@@ -1,5 +1,5 @@
 {
-  "name": "react-native-tor",
+  "name": "@niteshbalusu/react-native-tor",
   "version": "0.1.0",
   "description": "Tor daemon for react-native",
   "source": "./src/index.tsx",
