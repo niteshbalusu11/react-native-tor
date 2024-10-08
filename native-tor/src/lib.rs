@@ -19,17 +19,22 @@ pub fn run_arti(to: &str, cache: &str) -> Result<String> {
             .create_bootstrapped().await?;
 
         let mut stream = client.connect((to, 443)).await?;
-        stream.write_all(b"GET / HTTP/1.1\r\nHost: ").await?;
-        stream.write_all(to.as_bytes()).await?;
-        stream.write_all(b"\r\nConnection: close\r\n\r\n").await?;
+        let connect_string = format!("GET / HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", to);
+
+        stream
+            .write_all(connect_string.as_bytes())
+            .await?;
+
+        // IMPORTANT: Make sure the request was written.
+        // Arti buffers data, so flushing the buffer is usually required.
+        stream.flush().await?;
+
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await?;
+
         stream.close().await?;
 
-        let mut res = Vec::new();
-        stream.read_to_end(&mut res).await?;
-        let message = std::str::from_utf8(&res)?;
-        let start_index = message.find("\r\n\r\n").unwrap_or(0);
-
-        Ok(message[start_index..].to_owned())
+        Ok(String::from_utf8_lossy(&buf).to_string())
     })
 }
 

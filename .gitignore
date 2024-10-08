@@ -81,7 +81,6 @@ lib/
 ios/generated
 android/generated
 
-
 # Rust
 target
-jniLibs
+native-tor/jniLibs
