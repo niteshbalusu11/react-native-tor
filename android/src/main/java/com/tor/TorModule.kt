@@ -4,21 +4,33 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.Promise
 
-class TorModule internal constructor(context: ReactApplicationContext) :
-  TorSpec(context) {
+class TorModule internal constructor(context: ReactApplicationContext) : TorSpec(context) {
+    override fun getName(): String {
+        return NAME
+    }
 
-  override fun getName(): String {
-    return NAME
-  }
+    @ReactMethod
+    override fun multiply(a: Double, b: Double, promise: Promise) {
+        promise.resolve(a * b)
+    }
 
-  // Example method
-  // See https://reactnative.dev/docs/native-modules-android
-  @ReactMethod
-  override fun multiply(a: Double, b: Double, promise: Promise) {
-    promise.resolve(a * b)
-  }
+    @ReactMethod
+    fun myTorMethod(promise: Promise) {
+        try {
+            val result = nativeMyTorMethod()
+            promise.resolve(result)
+        } catch (e: Exception) {
+            promise.reject("TOR_ERROR", e.message)
+        }
+    }
 
-  companion object {
-    const val NAME = "Tor"
-  }
+    private external fun nativeMyTorMethod(): String
+
+    companion object {
+        const val NAME = "Tor"
+
+        init {
+            System.loadLibrary("tor")
+        }
+    }
 }

@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
-import { multiply } from 'react-native-tor';
+import { multiply, startTor } from 'react-native-tor';
 
 export default function App() {
   const [result, setResult] = useState<number | undefined>();
+
+  startTor()
+    .then(result => console.log(result))
+    .catch(error => console.error(error));
 
   useEffect(() => {
     multiply(3, 7).then(setResult);

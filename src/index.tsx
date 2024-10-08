@@ -27,3 +27,7 @@ const Tor = TorModule
 export function multiply(a: number, b: number): Promise<number> {
   return Tor.multiply(a, b);
 }
+
+export async function startTor() {
+  return await Tor.myTorMethod();
+}
