@@ -1,15 +1,21 @@
 import { useState, useEffect } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
-import { multiply, startTor } from 'react-native-tor';
+import { multiply, connectToTorNetwork } from 'react-native-tor';
 
 export default function App() {
   const [result, setResult] = useState<number | undefined>();
 
-  startTor()
-    .then((res: any) => console.log(res))
-    .catch((err: any) => console.error(err));
-
   useEffect(() => {
+    const connect = async () => {
+      try {
+        const res = await connectToTorNetwork('ifconfig.me');
+        console.log(res);
+      } catch (error) {
+        console.error('Error connecting to Tor network:', error);
+      }
+    };
+
+    connect();
     multiply(3, 7).then(setResult);
   }, []);
 

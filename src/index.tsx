@@ -28,6 +28,6 @@ export function multiply(a: number, b: number): Promise<number> {
   return Tor.multiply(a, b);
 }
 
-export async function startTor() {
-  return await Tor.myTorMethod();
+export function connectToTorNetwork(target: string): Promise<string> {
+  return Tor.connectToTorNetwork(target);
 }

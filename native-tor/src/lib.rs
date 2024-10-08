@@ -1,43 +1,42 @@
-use arti_client::{TorClient, TorClientConfig};
-use jni::objects::JClass;
-use jni::sys::jstring;
-use jni::JNIEnv;
-use tokio::runtime::Builder;
 use anyhow::Result;
+use futures::{AsyncReadExt, AsyncWriteExt};
 
-#[no_mangle]
-pub extern "C" fn Java_com_tor_TorModule_nativeMyTorMethod(env: JNIEnv, _: JClass) -> jstring {
-    // Create a new Tokio runtime
-    let runtime = match Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt,
-        Err(e) => {
-            let error_msg = format!("Failed to create Tokio runtime: {}", e);
-            return env.new_string(error_msg).expect("Couldn't create java string!").into_inner();
-        }
-    };
+use arti_client::{config::TorClientConfigBuilder, TorClient};
+use tor_rtcompat::BlockOn;
 
-    // Run the async block in the runtime
-    let result = runtime.block_on(async {
-        bootstrap_tor().await
-    });
+pub fn run_arti(to: &str, cache: &str) -> Result<String> {
+    let runtime = tor_rtcompat::PreferredRuntime::create()?;
+    let rt_copy = runtime.clone();
 
-    // Convert the result to a Java string
-    match result {
-        Ok(message) => env.new_string(message).expect("Couldn't create java string!").into_inner(),
-        Err(e) => {
-            let error_msg = format!("Error: {}", e);
-            env.new_string(error_msg).expect("Couldn't create java string!").into_inner()
-        }
-    }
+    let config = TorClientConfigBuilder::from_directories(
+        format!("{}/arti-data", cache),
+        format!("{}/arti-cache", cache),
+    )
+    .build()?;
+    rt_copy.block_on(async {
+        let client = TorClient::with_runtime(runtime)
+            .config(config)
+            .create_bootstrapped().await?;
+
+        let mut stream = client.connect((to, 443)).await?;
+        stream.write_all(b"GET / HTTP/1.1\r\nHost: ").await?;
+        stream.write_all(to.as_bytes()).await?;
+        stream.write_all(b"\r\nConnection: close\r\n\r\n").await?;
+        stream.close().await?;
+
+        let mut res = Vec::new();
+        stream.read_to_end(&mut res).await?;
+        let message = std::str::from_utf8(&res)?;
+        let start_index = message.find("\r\n\r\n").unwrap_or(0);
+
+        Ok(message[start_index..].to_owned())
+    })
 }
 
-async fn bootstrap_tor() -> Result<String> {
-    let config = TorClientConfig::builder().build().unwrap();
+/// Expose the JNI interface for Android
+#[cfg(target_os = "android")]
+pub mod android;
 
-    println!("tor config {:?}", config);
-    let tor_client = TorClient::create_bootstrapped(config).await?;
-
-    // You can add more Tor-related operations here if needed
-
-    Ok("Successfully connected to Tor network!".to_string())
-}
+/// Expose the native interface for iOS
+#[cfg(target_os = "ios")]
+pub mod ios;

@@ -3,12 +3,31 @@ name = "tor"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-crate-type = ["dylib"]
-
-
 [dependencies]
-anyhow = "1.0.89"
 arti-client = { version = "0.23.0", features = ["rustls", "tokio", "static"], default-features = false }
+tor-rtcompat = "0.23.0"
+
+# helpers
+anyhow = "1.0.52"
+futures = "0.3.19"
+
+# used to forward logs to system logger
+tracing-subscriber = "0.3.18"
+
+# dependancies specific to iOS
+[target.'cfg(target_os = "ios")'.dependencies]
+tracing-oslog = "0.2.0"
+
+# dependancies specific to Android
+[target.'cfg(target_os = "android")'.dependencies]
+# the java native interface
 jni = { version = "0.19", default-features = false }
-tokio = { version = "1.0", features = ["rt", "macros"] }
+
+# dependancies to make logs available with logcat
+tracing-android = "0.2.0"
+
+
+[lib]
+name = "tor"
+# dylib is for Android, staticlib is for iOS
+crate-type = ["dylib", "staticlib"]
