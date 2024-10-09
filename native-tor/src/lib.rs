@@ -3,7 +3,7 @@ use arti_client::{
     config::{onion_service::OnionServiceConfigBuilder, TorClientConfigBuilder},
     TorClient,
 };
-use futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
+use futures::{AsyncReadExt, AsyncWriteExt};
 use std::sync::{LazyLock, Mutex};
 use std::{fs, os::unix::fs::PermissionsExt};
 use tor_hsservice::HsNickname;
@@ -27,55 +27,58 @@ pub fn run_arti(test_url: &str, cache: &str) -> Result<String> {
     .context("Failed to build TorClientConfig")?;
 
     let client = RUNTIME
-        .block_on(async { TorClient::create_bootstrapped(config).await })
+        .block_on(async {
+            TorClient::with_runtime(RUNTIME.clone())
+                .config(config)
+                .create_bootstrapped()
+                .await
+        })
         .context("Failed to create and bootstrap TorClient")?;
 
     // Test the connection
     let test_result: Result<String, Error> = RUNTIME.block_on(async {
-        println!("Testing connection...");
+        println!("inside test conncection");
         let mut stream = client.connect((test_url, 80)).await?;
         let request = format!(
             "GET / HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
             test_url
         );
+
         stream.write_all(request.as_bytes()).await?;
         stream.flush().await?;
+
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await?;
-        println!(
-            "Response received: {:?}",
-            String::from_utf8_lossy(&response)
-        );
+        println!("{:?}", String::from_utf8_lossy(&response).to_string());
+
         Ok(String::from_utf8_lossy(&response).to_string())
     });
 
-    println!("Test result: {:?}", test_result);
+    println!("test result is {:?}", test_result);
 
-    // Launch onion service
     let hs_nickname =
         HsNickname::new("blixt".to_string()).context("Failed to create HsNickname")?;
+
     let onion_config = OnionServiceConfigBuilder::default()
         .nickname(hs_nickname)
         .build()?;
 
-    let (onion_service, mut request_stream) = RUNTIME
-        .block_on(async { client.launch_onion_service(onion_config) })
-        .context("Failed to launch onion service")?;
+    let (onion_service, mut _request_stream) = client.launch_onion_service(onion_config)?;
 
     println!(
         "Onion service launched. Address: {:?}",
         onion_service.onion_name()
     );
 
-    // Handle onion service requests in a separate thread
-    std::thread::spawn(move || {
-        RUNTIME.block_on(async {
-            while let Some(request) = request_stream.next().await {
-                println!("Received request: {:?}", request);
-                // Handle the request here
-            }
-        });
-    });
+    // RUNTIME.block_on(async {
+    //     while let Some(request) = request_stream.next().await {
+    //         tokio::spawn(async move {
+    //             // Handle the request here
+    //             println!("Received request: {:?}", request);
+    //             // You would typically process the request and send a response here
+    //         });
+    //     }
+    // });
 
     // Store the client only if the test was successful
     match test_result {
@@ -97,3 +100,11 @@ fn create_and_set_permissions(path: &str) -> Result<()> {
         .context(format!("Failed to set permissions for: {}", path))?;
     Ok(())
 }
+
+/// Expose the JNI interface for Android
+#[cfg(target_os = "android")]
+pub mod android;
+
+/// Expose the native interface for iOS
+#[cfg(target_os = "ios")]
+pub mod ios;

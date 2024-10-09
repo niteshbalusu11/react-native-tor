@@ -10,13 +10,15 @@ export default function App() {
       try {
         const res = await connectToTorNetwork('ifconfig.me');
         console.log(res);
+        const mul = await multiply(4, 8);
+        console.log('multiply result', mul);
+        setResult(mul);
       } catch (error) {
         console.error('Error connecting to Tor network:', error);
       }
     };
 
     connect();
-    multiply(3, 7).then(setResult);
   }, []);
 
   return (

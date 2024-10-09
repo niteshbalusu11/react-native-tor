@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arti-client = { version = "0.23.0", features = ["rustls", "tokio", "static", "onion-service-service"], default-features = true }
+arti-client = { version = "0.23.0", features = ["rustls", "tokio", "static", "onion-service-service"], default-features = false }
 tor-rtcompat = "0.23.0"
 
 # helpers
@@ -17,11 +17,9 @@ tokio = "1.40.0"
 tor-hsservice = "0.23.0"
 
 # dependancies specific to iOS
-[target.'cfg(target_os = "ios")'.dependencies]
 tracing-oslog = "0.2.0"
 
 # dependancies specific to Android
-[target.'cfg(target_os = "android")'.dependencies]
 # the java native interface
 jni = { version = "0.19", default-features = false }
 
@@ -32,4 +30,4 @@ tracing-android = "0.2.0"
 [lib]
 name = "tor"
 # dylib is for Android, staticlib is for iOS
-crate-type = ["rlib", "dylib"]
+crate-type = ["dylib", "staticlib"]
