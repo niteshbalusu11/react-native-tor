@@ -19,7 +19,7 @@ class TorModule internal constructor(context: ReactApplicationContext) : TorSpec
     }
 
     @ReactMethod
-    fun connectToTorNetwork(target: String, promise: Promise) {
+    override fun connectToTorNetwork(target: String, promise: Promise) {
         try {
             val cacheDir = reactContext.cacheDir.absolutePath
             val result = nativeConnectToTorNetwork(target, cacheDir)
