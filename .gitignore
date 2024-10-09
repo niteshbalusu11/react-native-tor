@@ -83,4 +83,4 @@ android/generated
 
 # Rust
 target
-jniLibs
+#jniLibs
