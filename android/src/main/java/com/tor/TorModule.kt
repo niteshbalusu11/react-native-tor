@@ -2,9 +2,10 @@
 
 package com.tor
 
+import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactMethod
-import com.facebook.react.bridge.Promise
+import java.io.File
 
 class TorModule internal constructor(context: ReactApplicationContext) : TorSpec(context) {
     private val reactContext: ReactApplicationContext = context
@@ -21,8 +22,12 @@ class TorModule internal constructor(context: ReactApplicationContext) : TorSpec
     @ReactMethod
     override fun connectToTorNetwork(target: String, promise: Promise) {
         try {
-            val cacheDir = reactContext.cacheDir.absolutePath
-            val result = nativeConnectToTorNetwork(target, cacheDir)
+            val filesDir = reactContext.cacheDir.absolutePath
+            val torDir = File(filesDir, "tor")
+            if (!torDir.exists()) {
+                torDir.mkdirs()
+            }
+            val result = nativeConnectToTorNetwork(target, filesDir)
             promise.resolve(result)
         } catch (e: Exception) {
             promise.reject("TOR_ERROR", e.message)

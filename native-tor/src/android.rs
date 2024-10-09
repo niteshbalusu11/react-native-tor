@@ -32,8 +32,11 @@ pub extern "C" fn Java_com_tor_TorModule_nativeConnectToTorNetwork(
             .expect("cache_dir is invalid")
             .to_string_lossy(),
     ) {
-        Ok(res) => format!("Http body: {}", res),
-        Err(e) => format!("Error Android: {}", e),
+        Ok(response) => format!(
+            "Tor client initialized successfully. Test response: {}",
+            response
+        ),
+        Err(e) => format!("Tor Error: {}. Cause: {:?}", e, e.root_cause()),
     };
 
     let output = env
