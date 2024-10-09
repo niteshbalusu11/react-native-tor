@@ -85,7 +85,8 @@ pub fn run_arti(test_url: &str, cache: &str) -> Result<String> {
         Ok(response) => {
             let mut tor_client = TOR_CLIENT.lock().unwrap();
             *tor_client = Some(client);
-            Ok(response)
+            let res = format!("{}{:?}", response, onion_service.onion_name());
+            Ok(res)
         }
         Err(e) => Err(e).context("Failed during connection test"),
     }
