@@ -1,11 +1,14 @@
-use anyhow::{Context, Error, Result};
+use anyhow::{Context, Result};
 use arti_client::{
     config::{onion_service::OnionServiceConfigBuilder, TorClientConfigBuilder},
     TorClient,
 };
-use futures::{AsyncReadExt, AsyncWriteExt};
+use std::net::SocketAddr;
 use std::sync::{LazyLock, Mutex};
 use std::{fs, os::unix::fs::PermissionsExt};
+use tokio::io::AsyncReadExt as TokioAsyncReadExt;
+use tokio::net::TcpListener;
+use tokio_socks::tcp::Socks5Stream;
 use tor_hsservice::HsNickname;
 use tor_rtcompat::BlockOn;
 
@@ -14,7 +17,7 @@ static TOR_CLIENT: LazyLock<Mutex<Option<TorClient<tor_rtcompat::PreferredRuntim
 static RUNTIME: LazyLock<tor_rtcompat::PreferredRuntime> =
     LazyLock::new(|| tor_rtcompat::PreferredRuntime::create().unwrap());
 
-pub fn run_arti(test_url: &str, cache: &str) -> Result<String> {
+pub fn run_arti_proxy(_target: &str, cache: &str) -> Result<String> {
     // Ensure directories exist with correct permissions
     create_and_set_permissions(&format!("{}/arti-data", cache))?;
     create_and_set_permissions(&format!("{}/arti-cache", cache))?;
@@ -35,60 +38,65 @@ pub fn run_arti(test_url: &str, cache: &str) -> Result<String> {
         })
         .context("Failed to create and bootstrap TorClient")?;
 
-    // Test the connection
-    let test_result: Result<String, Error> = RUNTIME.block_on(async {
-        println!("inside test conncection");
-        let mut stream = client.connect((test_url, 80)).await?;
-        let request = format!(
-            "GET / HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-            test_url
-        );
+    // Onion service setup (if needed)
+    let hs_nickname = OnionServiceConfigBuilder::default()
+        .nickname(HsNickname::new("blixt".to_string())?)
+        .build()
+        .context("Failed to create OnionServiceConfig")?;
 
-        stream.write_all(request.as_bytes()).await?;
-        stream.flush().await?;
-
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await?;
-        println!("{:?}", String::from_utf8_lossy(&response).to_string());
-
-        Ok(String::from_utf8_lossy(&response).to_string())
-    });
-
-    println!("test result is {:?}", test_result);
-
-    let hs_nickname =
-        HsNickname::new("blixt".to_string()).context("Failed to create HsNickname")?;
-
-    let onion_config = OnionServiceConfigBuilder::default()
-        .nickname(hs_nickname)
-        .build()?;
-
-    let (onion_service, mut _request_stream) = client.launch_onion_service(onion_config)?;
-
+    let (onion_service, _request_stream) = client.launch_onion_service(hs_nickname)?;
     println!(
         "Onion service launched. Address: {:?}",
         onion_service.onion_name()
     );
 
-    // RUNTIME.block_on(async {
-    //     while let Some(request) = request_stream.next().await {
-    //         tokio::spawn(async move {
-    //             // Handle the request here
-    //             println!("Received request: {:?}", request);
-    //             // You would typically process the request and send a response here
-    //         });
-    //     }
-    // });
+    // Run the SOCKS proxy on port 9050
+    let socks_address = SocketAddr::from(([127, 0, 0, 1], 9050));
+    println!("Starting SOCKS proxy on {:?}", socks_address);
 
-    // Store the client only if the test was successful
-    match test_result {
-        Ok(response) => {
-            let mut tor_client = TOR_CLIENT.lock().unwrap();
-            *tor_client = Some(client);
-            let res = format!("{}{:?}", response, onion_service.onion_name());
-            Ok(res)
-        }
-        Err(e) => Err(e).context("Failed during connection test"),
+    RUNTIME.block_on(async {
+        run_socks5_proxy(socks_address, &client)
+            .await
+            .context("Failed to run SOCKS proxy")
+    })?;
+
+    // Store the client
+    let mut tor_client = TOR_CLIENT.lock().unwrap();
+    *tor_client = Some(client);
+
+    let onion_name = onion_service.onion_name().unwrap().to_string();
+
+    Ok(onion_name)
+}
+
+async fn run_socks5_proxy(
+    addr: SocketAddr,
+    client: &TorClient<tor_rtcompat::PreferredRuntime>, // Use reference to avoid move
+) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    println!("SOCKS5 proxy listening on {:?}", addr);
+
+    loop {
+        let (socket, _) = listener.accept().await?;
+        let client_clone = client.clone();
+
+        tokio::spawn(async move {
+            // Accept connections and forward through the SOCKS proxy
+            let socks5_stream =
+                match Socks5Stream::connect("127.0.0.1:9050", "example.com:80").await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        eprintln!("Failed to connect through SOCKS5: {:?}", e);
+                        return;
+                    }
+                };
+
+            // Forward the SOCKS5 stream to the Tor network
+            let mut response = Vec::new();
+            let mut inner_stream = socks5_stream.into_inner();
+            inner_stream.read_to_end(&mut response).await.unwrap();
+            println!("Response: {:?}", String::from_utf8_lossy(&response));
+        });
     }
 }
 

@@ -1,44 +1,54 @@
 #![allow(non_snake_case)]
 
-use crate::run_arti;
-
+use crate::run_arti_proxy;
 use anyhow::Result;
-
-use std::sync::Once;
-use tracing_subscriber::fmt::Subscriber;
-use tracing_subscriber::prelude::*;
-
 use jni::objects::{JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
+use std::sync::Once;
+use std::thread;
+use tracing_subscriber::fmt::Subscriber;
+use tracing_subscriber::prelude::*;
 
-/// Create a static method myMethod on class net.example.MyClass
+/// Create a static method nativeConnectToTorNetwork on class com.tor.TorModule
 #[no_mangle]
 pub extern "C" fn Java_com_tor_TorModule_nativeConnectToTorNetwork(
     env: JNIEnv,
     _: JClass,
-    target: JString,
+    target: JString, // Not used, can be removed later if not needed
     cache_dir: JString,
 ) -> jstring {
-    // if logger initialization failed, there isn't much we can do, not even log it.
-    // it shouldn't stop Arti from functionning however!
+    // Initialize the logger
     let _ = init_logger();
 
-    let result = match run_arti(
-        &env.get_string(target)
-            .expect("target is invalid")
-            .to_string_lossy(),
-        &env.get_string(cache_dir)
-            .expect("cache_dir is invalid")
-            .to_string_lossy(),
-    ) {
-        Ok(response) => format!(
-            "Tor client initialized successfully. Test response: {}",
-            response
-        ),
-        Err(e) => format!("Tor Error: {}. Cause: {:?}", e, e.root_cause()),
-    };
+    // Fetch the cache directory from the passed JString
+    let cache_dir_str = env
+        .get_string(cache_dir)
+        .expect("cache_dir is invalid")
+        .to_string_lossy()
+        .to_string(); // Clone to move into a new thread
 
+    let target_str = env
+        .get_string(target)
+        .expect("target is invalid")
+        .to_string_lossy()
+        .to_string(); // Clone to move into a new thread
+
+    // Spawn a new thread to run the Tor client in the background
+    thread::spawn(move || match run_arti_proxy(&target_str, &cache_dir_str) {
+        Ok(response) => {
+            println!(
+                "Tor client initialized successfully. Onion address: {}",
+                response
+            );
+        }
+        Err(e) => {
+            eprintln!("Tor Error: {}. Cause: {:?}", e, e.root_cause());
+        }
+    });
+
+    // Immediately return a success message without waiting for the Tor client to finish
+    let result = "Tor client is starting in the background".to_string();
     let output = env
         .new_string(result)
         .expect("failed to create java string");

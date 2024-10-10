@@ -1,20 +1,38 @@
 import { useState, useEffect } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
-import { multiply, connectToTorNetwork } from 'react-native-lnd-tor';
+import { connectToTorNetwork, multiply } from 'react-native-lnd-tor';
+import axios from 'axios';
 
 export default function App() {
-  const [result, setResult] = useState<number | undefined>();
+  const [torIp, setTorIp] = useState<string | undefined>();
 
   useEffect(() => {
     const connect = async () => {
       try {
+        const mul = await multiply(8, 4);
+
+        console.log('multiply res', mul);
+        // Initialize Tor proxy
         const res = await connectToTorNetwork('ifconfig.me');
         console.log(res);
-        const mul = await multiply(4, 8);
-        console.log('multiply result', mul);
-        setResult(mul);
+
+        // Make a request to get the public IP through the Tor network
+        const response = await axios.get('https://ifconfig.me', {
+          proxy: {
+            host: '127.0.0.1',
+            port: 9050, // This is the port where the SOCKS proxy is running
+            protocol: 'socks5', // Important: use SOCKS5 protocol
+          },
+        });
+
+        // Log the IP address returned by the request
+        console.log('IP from Tor network:', response.data);
+        setTorIp(response.data);
       } catch (error) {
-        console.error('Error connecting to Tor network:', error);
+        console.error(
+          'Error connecting to Tor network or making request:',
+          error
+        );
       }
     };
 
@@ -23,7 +41,7 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <Text>Result: {result}</Text>
+      <Text>Tor Network IP: {torIp}</Text>
     </View>
   );
 }
