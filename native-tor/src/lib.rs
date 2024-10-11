@@ -1,181 +1,137 @@
-use anyhow::{anyhow, Context, Result};
+use android_logger::Config as AndroidLogConfig;
+use anyhow::{Context, Result};
+use arti::{run, ArtiConfigBuilder};
+use arti_client::config::onion_service::OnionServiceConfigBuilder;
 use arti_client::config::TorClientConfigBuilder;
 use arti_client::TorClient;
-use futures::future::try_join;
+use futures::StreamExt;
 use log::{error, info};
 use std::{fs, os::unix::fs::PermissionsExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream}; // Import logging macros
 use tokio::sync::oneshot::Sender;
+use tor_cell::relaycell::msg::Connected;
+use tor_config::{ConfigurationSources, Listen};
+use tor_hsservice::{HsNickname, RendRequest};
+use tor_rtcompat::tokio::TokioRustlsRuntime;
 
 // Modify the function signature to accept the Sender
 pub async fn run_arti_proxy(_target: &str, cache: &str, ready_tx: Sender<()>) -> Result<String> {
+    // Initialize the Android logger
+    android_logger::init_once(
+        AndroidLogConfig::default()
+            .with_min_level(log::Level::Info) // Set the minimum log level
+            .with_tag("TorModule"), // Set a custom tag
+    );
+
+    log::info!("Tor Socks.. Inside run_arti_proxy");
+
     let data_dir = format!("{}/arti-data", cache);
     let cache_dir = format!("{}/arti-cache", cache);
     create_and_set_permissions(&data_dir)?;
     create_and_set_permissions(&cache_dir)?;
 
+    let arti_config = ArtiConfigBuilder::default().build()?;
+
+    log::info!("Tor Socks.. ArtiConfigBuilder setup complete");
+
+    let client_config_builder = TorClientConfigBuilder::from_directories(&data_dir, &cache_dir);
+    let client_config = client_config_builder.build()?;
+
+    log::info!("Tor Socks.. TorClientConfigBuilder setup complete");
+
+    let runtime = TokioRustlsRuntime::create()?;
+
+    log::info!("Tor Socks.. TokioRustlsRuntime setup complete");
+
+    let socks_listen = Listen::new_localhost(9050);
+    let dns_listen = Listen::new_none();
+    let config_sources = ConfigurationSources::default();
+
+    log::info!("Tor Socks.. Setting up socks proxy");
+
+    run(
+        runtime,
+        socks_listen,
+        dns_listen,
+        config_sources,
+        arti_config,
+        client_config,
+    )
+    .await?;
+
+    log::info!("Tor Socks.. Socks proxy running on 9050");
+
     // Create a TorClientConfig using TorClientConfigBuilder
-    let config = TorClientConfigBuilder::from_directories(data_dir, cache_dir).build()?;
+    let config_builder = TorClientConfigBuilder::from_directories(&data_dir, &cache_dir);
+
+    // Set up the onion service configuration
+    let hs_config = OnionServiceConfigBuilder::default()
+        .nickname(HsNickname::new("blixt".to_string())?)
+        .build()
+        .context("Failed to build OnionServiceConfig")?;
+
+    let config = config_builder.build()?;
 
     let tor_client = TorClient::create_bootstrapped(config).await?;
 
-    // Start the SOCKS proxy in the background
-    let socks_port = 9050; // Change this to your desired port
-    let listen_addr = format!("127.0.0.1:{}", socks_port);
-    let tor_client_clone = tor_client.clone();
+    // Launch the onion service
+    let (onion_service, onion_service_request_stream) = tor_client
+        .launch_onion_service(hs_config)
+        .context("Failed to launch onion service")?;
 
-    // Pass the sender to run_socks_proxy
+    let onion_address = onion_service.onion_name();
+    info!("Onion service launched at: {:?}", onion_address);
+
+    // Handle incoming onion service connections
     tokio::spawn(async move {
-        if let Err(e) = run_socks_proxy(tor_client_clone, &listen_addr, ready_tx).await {
-            error!("SOCKS proxy exited with error: {}", e);
+        if let Err(e) = handle_onion_service_connections(onion_service_request_stream).await {
+            error!("Onion service error: {}", e);
         }
     });
 
-    Ok("Arti Tor proxy started successfully".to_string())
-}
-
-async fn run_socks_proxy<R>(
-    tor_client: TorClient<R>,
-    listen_addr: &str,
-    ready_tx: Sender<()>,
-) -> Result<()>
-where
-    R: tor_rtcompat::Runtime,
-{
-    let listener = TcpListener::bind(&listen_addr)
-        .await
-        .context(format!("Failed to bind to {}", listen_addr))?;
-    info!("SOCKS proxy: listening on {}", listen_addr);
-
-    // Send the signal to indicate the proxy is ready
     let _ = ready_tx.send(());
 
-    loop {
-        let (stream, addr) = listener
-            .accept()
-            .await
-            .context("Failed to accept incoming connection")?;
-        let tor_client_clone = tor_client.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_socks5_client(stream, tor_client_clone).await {
-                error!(
-                    "SOCKS proxy: Failed to handle SOCKS connection from {}: {}",
-                    addr, e
-                );
-            }
-        });
-    }
+    Ok(format!(
+        "Arti Tor proxy and onion service started successfully. Onion address: {:?}",
+        onion_address
+    ))
 }
 
-async fn handle_socks5_client<R>(
-    mut client_stream: TcpStream,
-    tor_client: TorClient<R>,
-) -> Result<()>
-where
-    R: tor_rtcompat::Runtime,
-{
-    info!("SOCKS proxy: inside handle_socks5_client");
+async fn handle_onion_service_connections(
+    mut rend_request_stream: impl StreamExt<Item = RendRequest> + Unpin,
+) -> Result<()> {
+    while let Some(rend_request) = rend_request_stream.next().await {
+        // Accept the rendezvous request
+        let mut stream_request_stream = rend_request.accept().await?;
 
-    // Implement minimal SOCKS5 handshake
-    let mut buf = [0u8; 262];
+        // Handle the stream requests
+        while let Some(stream_request) = stream_request_stream.next().await {
+            // Accept the stream request to get a DataStream
 
-    // Read the SOCKS5 greeting
-    let n = client_stream
-        .read(&mut buf)
-        .await
-        .context("Failed to read SOCKS5 greeting")?;
-    if n < 2 {
-        return Err(anyhow!("Invalid SOCKS5 greeting"));
-    }
+            let mut data_stream = stream_request.accept(Connected::new_empty()).await?;
 
-    if buf[0] != 0x05 {
-        return Err(anyhow!("Only SOCKS5 is supported"));
-    }
-
-    // Send the authentication method response (no authentication)
-    client_stream
-        .write_all(&[0x05, 0x00])
-        .await
-        .context("Failed to write SOCKS5 method selection")?;
-
-    // Read the SOCKS5 request
-    let n = client_stream
-        .read(&mut buf)
-        .await
-        .context("Failed to read SOCKS5 request")?;
-    if n < 5 {
-        return Err(anyhow!("Invalid SOCKS5 request"));
-    }
-
-    if buf[0] != 0x05 {
-        return Err(anyhow!("Invalid SOCKS5 version in request"));
-    }
-
-    if buf[1] != 0x01 {
-        return Err(anyhow!("Only CONNECT command is supported"));
-    }
-
-    let addr = match buf[3] {
-        0x01 => {
-            // IPv4
-            if n < 10 {
-                return Err(anyhow!("Invalid IPv4 address in SOCKS5 request"));
-            }
-            let ip = std::net::Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]);
-            let port = u16::from_be_bytes([buf[8], buf[9]]);
-            (ip.to_string(), port)
+            // Spawn a task to handle the data stream
+            tokio::spawn(async move {
+                if let Err(e) = process_onion_stream(&mut data_stream).await {
+                    error!("Error processing onion stream: {}", e);
+                }
+            });
         }
-        0x03 => {
-            // Domain name
-            let domain_len = buf[4] as usize;
-            if n < 5 + domain_len + 2 {
-                return Err(anyhow!("Invalid domain name in SOCKS5 request"));
-            }
-            let domain = std::str::from_utf8(&buf[5..5 + domain_len])
-                .context("Failed to parse domain name")?;
-            let port = u16::from_be_bytes([buf[5 + domain_len], buf[6 + domain_len]]);
-            (domain.to_string(), port)
-        }
-        0x04 => {
-            // IPv6
-            if n < 22 {
-                return Err(anyhow!("Invalid IPv6 address in SOCKS5 request"));
-            }
-            let ip = std::net::Ipv6Addr::from([
-                buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11], buf[12], buf[13],
-                buf[14], buf[15], buf[16], buf[17], buf[18], buf[19],
-            ]);
-            let port = u16::from_be_bytes([buf[20], buf[21]]);
-            (ip.to_string(), port)
-        }
-        _ => return Err(anyhow!("Unsupported address type in SOCKS5 request")),
-    };
+    }
+    Ok(())
+}
 
-    info!("SOCKS proxy: Connecting to {}:{}", addr.0, addr.1);
+async fn process_onion_stream(
+    stream: &mut (impl AsyncReadExt + AsyncWriteExt + Unpin),
+) -> Result<()> {
+    // Implement your service logic here.
+    // For example, read data from the stream and respond.
+    let mut buf = [0u8; 1024];
+    let n = stream.read(&mut buf).await?;
+    info!("Received data: {:?}", &buf[..n]);
 
-    // Send the SOCKS5 response (success)
-    let response = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]; // BND.ADDR and BND.PORT are set to zero
-    client_stream
-        .write_all(&response)
-        .await
-        .context("Failed to write SOCKS5 response")?;
-
-    // Now, create a connection through Tor
-    let tor_stream = tor_client
-        .connect(addr)
-        .await
-        .context("Failed to connect through Tor")?;
-
-    // Relay data between client_stream and tor_stream
-    let (mut ri, mut wi) = tokio::io::split(client_stream);
-    let (mut ro, mut wo) = tokio::io::split(tor_stream);
-
-    let client_to_tor = tokio::io::copy(&mut ri, &mut wo);
-    let tor_to_client = tokio::io::copy(&mut ro, &mut wi);
-
-    try_join(client_to_tor, tor_to_client).await?;
-
+    // Echo back the data
+    stream.write_all(&buf[..n]).await?;
     Ok(())
 }
 

@@ -46,6 +46,8 @@ pub extern "C" fn Java_com_tor_TorModule_nativeConnectToTorNetwork(
     thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async {
+            log::info!("Tor Socks.. Inside android tokio spawn");
+
             match run_arti_proxy(&target_str, &cache_dir_str, tx).await {
                 Ok(response) => {
                     log::info!(
@@ -54,7 +56,7 @@ pub extern "C" fn Java_com_tor_TorModule_nativeConnectToTorNetwork(
                     );
                 }
                 Err(e) => {
-                    log::error!("Tor Error: {}. Cause: {:?}", e, e.root_cause());
+                    log::error!("Tor Error: Cause: {:?}", e);
                 }
             }
         });

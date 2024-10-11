@@ -8,8 +8,11 @@ arti-client = { version = "0.23.0", features = [
     "rustls",
     "tokio",
     "static",
+    "onion-service-service",
 ], default-features = false }
 tor-rtcompat = "0.23.0"
+tor-hsservice = "0.23.0"
+
 # helpers
 anyhow = "1.0.52"
 futures = "0.3.19"
@@ -26,9 +29,17 @@ android_logger = "0.11"
 # the java native interface
 jni = { version = "0.19", default-features = false }
 
-# dependancies to make logs available with logcat
+arti = { version = "1.2.8", features = [
+    "experimental-api",
+    "onion-service-service",
+    "rustls",
+    "tokio",
+] }
 tracing-android = "0.2.0"
+# dependancies to make logs available with logcat
 log = "0.4.22"
+tor-cell = "0.23.0"
+tor-config = "0.23.0"
 
 
 [lib]
