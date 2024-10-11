@@ -46,7 +46,7 @@ where
     let listener = TcpListener::bind(&listen_addr)
         .await
         .context(format!("Failed to bind to {}", listen_addr))?;
-    info!("SOCKS proxy listening on {}", listen_addr);
+    info!("SOCKS proxy: listening on {}", listen_addr);
 
     // Send the signal to indicate the proxy is ready
     let _ = ready_tx.send(());
@@ -59,7 +59,10 @@ where
         let tor_client_clone = tor_client.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_socks5_client(stream, tor_client_clone).await {
-                error!("Failed to handle SOCKS connection from {}: {}", addr, e);
+                error!(
+                    "SOCKS proxy: Failed to handle SOCKS connection from {}: {}",
+                    addr, e
+                );
             }
         });
     }
@@ -72,6 +75,8 @@ async fn handle_socks5_client<R>(
 where
     R: tor_rtcompat::Runtime,
 {
+    info!("SOCKS proxy: inside handle_socks5_client");
+
     // Implement minimal SOCKS5 handshake
     let mut buf = [0u8; 262];
 
@@ -147,7 +152,7 @@ where
         _ => return Err(anyhow!("Unsupported address type in SOCKS5 request")),
     };
 
-    info!("Connecting to {}:{}", addr.0, addr.1);
+    info!("SOCKS proxy: Connecting to {}:{}", addr.0, addr.1);
 
     // Send the SOCKS5 response (success)
     let response = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]; // BND.ADDR and BND.PORT are set to zero

@@ -4,18 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arti-client = { version = "0.23.0", features = ["rustls", "tokio", "static", "onion-service-service"], default-features = false }
+arti-client = { version = "0.23.0", features = [
+    "rustls",
+    "tokio",
+    "static",
+], default-features = false }
 tor-rtcompat = "0.23.0"
-tor-hsrproxy = "0.23.0"
 # helpers
 anyhow = "1.0.52"
 futures = "0.3.19"
 
 # used to forward logs to system logger
 tracing-subscriber = "0.3.18"
-tokio = {version = "1.40.0", features = ["full"]}
-tor-hsservice = "0.23.0"
-tor-config = "0.23.0"
+tokio = { version = "1.40.0", features = ["macros"] }
 
 # dependancies specific to iOS
 tracing-oslog = "0.2.0"
@@ -27,8 +28,6 @@ jni = { version = "0.19", default-features = false }
 
 # dependancies to make logs available with logcat
 tracing-android = "0.2.0"
-socks = "0.3.4"
-tokio-socks = "0.5.2"
 log = "0.4.22"
 
 
