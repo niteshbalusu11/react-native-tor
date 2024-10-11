@@ -6,8 +6,10 @@ use log::{error, info};
 use std::{fs, os::unix::fs::PermissionsExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream}; // Import logging macros
+use tokio::sync::oneshot::Sender;
 
-pub async fn run_arti_proxy(_target: &str, cache: &str) -> Result<String> {
+// Modify the function signature to accept the Sender
+pub async fn run_arti_proxy(_target: &str, cache: &str, ready_tx: Sender<()>) -> Result<String> {
     let data_dir = format!("{}/arti-data", cache);
     let cache_dir = format!("{}/arti-cache", cache);
     create_and_set_permissions(&data_dir)?;
@@ -22,8 +24,10 @@ pub async fn run_arti_proxy(_target: &str, cache: &str) -> Result<String> {
     let socks_port = 9050; // Change this to your desired port
     let listen_addr = format!("127.0.0.1:{}", socks_port);
     let tor_client_clone = tor_client.clone();
+
+    // Pass the sender to run_socks_proxy
     tokio::spawn(async move {
-        if let Err(e) = run_socks_proxy(tor_client_clone, &listen_addr).await {
+        if let Err(e) = run_socks_proxy(tor_client_clone, &listen_addr, ready_tx).await {
             error!("SOCKS proxy exited with error: {}", e);
         }
     });
@@ -31,7 +35,11 @@ pub async fn run_arti_proxy(_target: &str, cache: &str) -> Result<String> {
     Ok("Arti Tor proxy started successfully".to_string())
 }
 
-async fn run_socks_proxy<R>(tor_client: TorClient<R>, listen_addr: &str) -> Result<()>
+async fn run_socks_proxy<R>(
+    tor_client: TorClient<R>,
+    listen_addr: &str,
+    ready_tx: Sender<()>,
+) -> Result<()>
 where
     R: tor_rtcompat::Runtime,
 {
@@ -39,6 +47,9 @@ where
         .await
         .context(format!("Failed to bind to {}", listen_addr))?;
     info!("SOCKS proxy listening on {}", listen_addr);
+
+    // Send the signal to indicate the proxy is ready
+    let _ = ready_tx.send(());
 
     loop {
         let (stream, addr) = listener

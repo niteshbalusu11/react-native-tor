@@ -5,8 +5,9 @@ use jni::JNIEnv;
 use std::thread;
 use tokio::runtime::Runtime;
 
-// Import android_logger
+// Import android_logger and oneshot
 use android_logger::Config as AndroidLogConfig;
+use tokio::sync::oneshot;
 
 #[no_mangle]
 pub extern "C" fn Java_com_tor_TorModule_nativeConnectToTorNetwork(
@@ -39,10 +40,13 @@ pub extern "C" fn Java_com_tor_TorModule_nativeConnectToTorNetwork(
         log::error!("Panic occurred: {:?}", panic_info);
     }));
 
+    // Create a oneshot channel
+    let (tx, rx) = oneshot::channel();
+
     thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create Tokio runtime");
         rt.block_on(async {
-            match run_arti_proxy(&target_str, &cache_dir_str).await {
+            match run_arti_proxy(&target_str, &cache_dir_str, tx).await {
                 Ok(response) => {
                     log::info!(
                         "Tor client initialized successfully. Response: {}",
@@ -55,6 +59,16 @@ pub extern "C" fn Java_com_tor_TorModule_nativeConnectToTorNetwork(
             }
         });
     });
+
+    // Wait for the signal that the proxy has started
+    match rx.blocking_recv() {
+        Ok(_) => {
+            log::info!("SOCKS proxy is now running");
+        }
+        Err(e) => {
+            log::error!("Failed to receive signal that SOCKS proxy started: {}", e);
+        }
+    }
 
     let result = "Tor client is starting in the background".to_string();
     let output = env
