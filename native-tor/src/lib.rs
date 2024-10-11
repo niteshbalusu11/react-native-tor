@@ -1,103 +1,166 @@
-use anyhow::{Context, Result};
-use arti_client::{
-    config::{onion_service::OnionServiceConfigBuilder, TorClientConfigBuilder},
-    TorClient,
-};
-use std::net::SocketAddr;
-use std::sync::{LazyLock, Mutex};
+use anyhow::{anyhow, Context, Result};
+use arti_client::config::TorClientConfigBuilder;
+use arti_client::TorClient;
+use futures::future::try_join;
+use log::{error, info};
 use std::{fs, os::unix::fs::PermissionsExt};
-use tokio::io::AsyncReadExt as TokioAsyncReadExt;
-use tokio::net::TcpListener;
-use tokio_socks::tcp::Socks5Stream;
-use tor_hsservice::HsNickname;
-use tor_rtcompat::BlockOn;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream}; // Import logging macros
 
-static TOR_CLIENT: LazyLock<Mutex<Option<TorClient<tor_rtcompat::PreferredRuntime>>>> =
-    LazyLock::new(|| Mutex::new(None));
-static RUNTIME: LazyLock<tor_rtcompat::PreferredRuntime> =
-    LazyLock::new(|| tor_rtcompat::PreferredRuntime::create().unwrap());
+pub async fn run_arti_proxy(_target: &str, cache: &str) -> Result<String> {
+    let data_dir = format!("{}/arti-data", cache);
+    let cache_dir = format!("{}/arti-cache", cache);
+    create_and_set_permissions(&data_dir)?;
+    create_and_set_permissions(&cache_dir)?;
 
-pub fn run_arti_proxy(_target: &str, cache: &str) -> Result<String> {
-    // Ensure directories exist with correct permissions
-    create_and_set_permissions(&format!("{}/arti-data", cache))?;
-    create_and_set_permissions(&format!("{}/arti-cache", cache))?;
+    // Create a TorClientConfig using TorClientConfigBuilder
+    let config = TorClientConfigBuilder::from_directories(data_dir, cache_dir).build()?;
 
-    let config = TorClientConfigBuilder::from_directories(
-        format!("{}/arti-data", cache),
-        format!("{}/arti-cache", cache),
-    )
-    .build()
-    .context("Failed to build TorClientConfig")?;
+    let tor_client = TorClient::create_bootstrapped(config).await?;
 
-    let client = RUNTIME
-        .block_on(async {
-            TorClient::with_runtime(RUNTIME.clone())
-                .config(config)
-                .create_bootstrapped()
-                .await
-        })
-        .context("Failed to create and bootstrap TorClient")?;
+    // Start the SOCKS proxy in the background
+    let socks_port = 9050; // Change this to your desired port
+    let listen_addr = format!("127.0.0.1:{}", socks_port);
+    let tor_client_clone = tor_client.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_socks_proxy(tor_client_clone, &listen_addr).await {
+            error!("SOCKS proxy exited with error: {}", e);
+        }
+    });
 
-    // Onion service setup (if needed)
-    let hs_nickname = OnionServiceConfigBuilder::default()
-        .nickname(HsNickname::new("blixt".to_string())?)
-        .build()
-        .context("Failed to create OnionServiceConfig")?;
-
-    let (onion_service, _request_stream) = client.launch_onion_service(hs_nickname)?;
-    println!(
-        "Onion service launched. Address: {:?}",
-        onion_service.onion_name()
-    );
-
-    // Run the SOCKS proxy on port 9050
-    let socks_address = SocketAddr::from(([127, 0, 0, 1], 9050));
-    println!("Starting SOCKS proxy on {:?}", socks_address);
-
-    RUNTIME.block_on(async {
-        run_socks5_proxy(socks_address, &client)
-            .await
-            .context("Failed to run SOCKS proxy")
-    })?;
-
-    // Store the client
-    let mut tor_client = TOR_CLIENT.lock().unwrap();
-    *tor_client = Some(client);
-
-    let onion_name = onion_service.onion_name().unwrap().to_string();
-
-    Ok(onion_name)
+    Ok("Arti Tor proxy started successfully".to_string())
 }
 
-async fn run_socks5_proxy(
-    addr: SocketAddr,
-    client: &TorClient<tor_rtcompat::PreferredRuntime>, // Use reference to avoid move
-) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-    println!("SOCKS5 proxy listening on {:?}", addr);
+async fn run_socks_proxy<R>(tor_client: TorClient<R>, listen_addr: &str) -> Result<()>
+where
+    R: tor_rtcompat::Runtime,
+{
+    let listener = TcpListener::bind(&listen_addr)
+        .await
+        .context(format!("Failed to bind to {}", listen_addr))?;
+    info!("SOCKS proxy listening on {}", listen_addr);
 
     loop {
-        let (socket, _) = listener.accept().await?;
-        let client_clone = client.clone();
-
+        let (stream, addr) = listener
+            .accept()
+            .await
+            .context("Failed to accept incoming connection")?;
+        let tor_client_clone = tor_client.clone();
         tokio::spawn(async move {
-            // Accept connections and forward through the SOCKS proxy
-            let socks5_stream =
-                match Socks5Stream::connect("127.0.0.1:9050", "example.com:80").await {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        eprintln!("Failed to connect through SOCKS5: {:?}", e);
-                        return;
-                    }
-                };
-
-            // Forward the SOCKS5 stream to the Tor network
-            let mut response = Vec::new();
-            let mut inner_stream = socks5_stream.into_inner();
-            inner_stream.read_to_end(&mut response).await.unwrap();
-            println!("Response: {:?}", String::from_utf8_lossy(&response));
+            if let Err(e) = handle_socks5_client(stream, tor_client_clone).await {
+                error!("Failed to handle SOCKS connection from {}: {}", addr, e);
+            }
         });
     }
+}
+
+async fn handle_socks5_client<R>(
+    mut client_stream: TcpStream,
+    tor_client: TorClient<R>,
+) -> Result<()>
+where
+    R: tor_rtcompat::Runtime,
+{
+    // Implement minimal SOCKS5 handshake
+    let mut buf = [0u8; 262];
+
+    // Read the SOCKS5 greeting
+    let n = client_stream
+        .read(&mut buf)
+        .await
+        .context("Failed to read SOCKS5 greeting")?;
+    if n < 2 {
+        return Err(anyhow!("Invalid SOCKS5 greeting"));
+    }
+
+    if buf[0] != 0x05 {
+        return Err(anyhow!("Only SOCKS5 is supported"));
+    }
+
+    // Send the authentication method response (no authentication)
+    client_stream
+        .write_all(&[0x05, 0x00])
+        .await
+        .context("Failed to write SOCKS5 method selection")?;
+
+    // Read the SOCKS5 request
+    let n = client_stream
+        .read(&mut buf)
+        .await
+        .context("Failed to read SOCKS5 request")?;
+    if n < 5 {
+        return Err(anyhow!("Invalid SOCKS5 request"));
+    }
+
+    if buf[0] != 0x05 {
+        return Err(anyhow!("Invalid SOCKS5 version in request"));
+    }
+
+    if buf[1] != 0x01 {
+        return Err(anyhow!("Only CONNECT command is supported"));
+    }
+
+    let addr = match buf[3] {
+        0x01 => {
+            // IPv4
+            if n < 10 {
+                return Err(anyhow!("Invalid IPv4 address in SOCKS5 request"));
+            }
+            let ip = std::net::Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]);
+            let port = u16::from_be_bytes([buf[8], buf[9]]);
+            (ip.to_string(), port)
+        }
+        0x03 => {
+            // Domain name
+            let domain_len = buf[4] as usize;
+            if n < 5 + domain_len + 2 {
+                return Err(anyhow!("Invalid domain name in SOCKS5 request"));
+            }
+            let domain = std::str::from_utf8(&buf[5..5 + domain_len])
+                .context("Failed to parse domain name")?;
+            let port = u16::from_be_bytes([buf[5 + domain_len], buf[6 + domain_len]]);
+            (domain.to_string(), port)
+        }
+        0x04 => {
+            // IPv6
+            if n < 22 {
+                return Err(anyhow!("Invalid IPv6 address in SOCKS5 request"));
+            }
+            let ip = std::net::Ipv6Addr::from([
+                buf[4], buf[5], buf[6], buf[7], buf[8], buf[9], buf[10], buf[11], buf[12], buf[13],
+                buf[14], buf[15], buf[16], buf[17], buf[18], buf[19],
+            ]);
+            let port = u16::from_be_bytes([buf[20], buf[21]]);
+            (ip.to_string(), port)
+        }
+        _ => return Err(anyhow!("Unsupported address type in SOCKS5 request")),
+    };
+
+    info!("Connecting to {}:{}", addr.0, addr.1);
+
+    // Send the SOCKS5 response (success)
+    let response = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]; // BND.ADDR and BND.PORT are set to zero
+    client_stream
+        .write_all(&response)
+        .await
+        .context("Failed to write SOCKS5 response")?;
+
+    // Now, create a connection through Tor
+    let tor_stream = tor_client
+        .connect(addr)
+        .await
+        .context("Failed to connect through Tor")?;
+
+    // Relay data between client_stream and tor_stream
+    let (mut ri, mut wi) = tokio::io::split(client_stream);
+    let (mut ro, mut wo) = tokio::io::split(tor_stream);
+
+    let client_to_tor = tokio::io::copy(&mut ri, &mut wo);
+    let tor_to_client = tokio::io::copy(&mut ro, &mut wi);
+
+    try_join(client_to_tor, tor_to_client).await?;
+
+    Ok(())
 }
 
 fn create_and_set_permissions(path: &str) -> Result<()> {
