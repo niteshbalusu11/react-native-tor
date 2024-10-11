@@ -1,9 +1,7 @@
 use crate::run_arti_proxy;
-use anyhow::Result;
 use jni::objects::{JClass, JString};
 use jni::sys::jstring;
 use jni::JNIEnv;
-use log::LevelFilter;
 use std::thread;
 use tokio::runtime::Runtime;
 
@@ -35,6 +33,11 @@ pub extern "C" fn Java_com_tor_TorModule_nativeConnectToTorNetwork(
             .with_min_level(log::Level::Info) // Set the minimum log level
             .with_tag("TorModule"), // Set a custom tag
     );
+
+    // Set a panic hook to log panics
+    std::panic::set_hook(Box::new(|panic_info| {
+        log::error!("Panic occurred: {:?}", panic_info);
+    }));
 
     thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create Tokio runtime");
