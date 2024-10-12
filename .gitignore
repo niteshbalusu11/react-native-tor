@@ -84,3 +84,5 @@ android/generated
 # Rust
 target
 jniLibs
+arti-cache
+arti-data

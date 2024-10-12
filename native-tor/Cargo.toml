@@ -35,7 +35,6 @@ arti = { version = "1.2.8", features = [
     "rustls",
     "tokio",
 ] }
-tracing-android = "0.2.0"
 # dependancies to make logs available with logcat
 log = "0.4.22"
 tor-cell = "0.23.0"
